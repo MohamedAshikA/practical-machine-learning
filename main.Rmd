@@ -1,0 +1,199 @@
+# Determinig How Well are Done Physical Activities
+## By Jonathan Pregonero
+
+## Sinopsys
+When we talk about keeping our body healthy, frequently we think in the amount
+of physical exercises we must do, so greater numbers of activities the better.
+But, what about the quality of the activities?, are we doing them in the right
+way?  In this brief project, we will build a machine learning model in order to
+predict if a specified physical activity (weight lifting) was done right, based
+on the measures taken by four sensor. This information was collected as part of
+the [HAR project](http://groupware.les.inf.puc-rio.br/har) developed by the groupware.les investigation group.
+
+We will made basic exploratory data analysis and built three alternative models
+for predicting the quality of the observed activities, we will choose the model
+with an accuracy of at least 80%.
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning=FALSE, message=FALSE,
+                          remarks = FALSE, fig.align='center')
+```
+
+```{r libraries, results='hide'}
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(caret)
+library(recipes)
+library(parallel)
+library(doParallel)
+```
+## Getting Data
+Information (training and test data sets) is available on [Groupware page](http://groupware.les.inf.puc-rio.br/har).
+```{r get_data}
+train <- read.csv("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv")
+test <- read.csv("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv")
+```
+## Exploratory Data Analysis
+```{r results='hide'}
+dim(train)
+str(train)
+colnames(train)
+```
+Training set has 160 variables and 19622 observations, (test set has 20
+observations). In a general review, the main variables are: user name; time
+stamps; sliding windows; measures for four sensors (glove, armband, lumbar belt
+and dumbbell) in terms of Euler angles (roll, pitch and yaw) with some
+calculations (mean, variance, standard deviation, max, min, amplitude, kurtosis
+and skewness); raw accelerometer, gyroscope and magnetometer readings, and
+finally classe as our interest variable, as it shows whether an activity was
+performed correctly (A) or in a wrong way (B, C, D or E), but is only available
+in training set, instead test set has a new variable named problem_id.
+
+If we make a plot of data according its class, we see that A class is the most
+frequent with 5580 observations (28%).
+```{r plot}
+ggplot(data=train,aes(classe,fill=classe))+geom_bar()+labs(title="Data by class")+
+  theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 12))
+table(train$classe)
+prop.table(table(train$classe)) %>% round(digits = 2)
+```
+## Mising Data
+In a quick view, we see that there are variables with many NA values, so we check
+the variables with more than 0 NAs.
+```{r results='hide', echo=FALSE}
+np1 <- train %>% select(everything()) %>%
+          summarise_all(funs(sum(is.na(.)))) %>% 
+          select_if((.>0))
+np1
+```
+There are 67 variables that have 19,216 observations with NA values (98% of all
+observations), their names suggest that they are calculations from original
+measures, so we will drop them as predictors.
+```{r results='hide'}
+train2 <- train %>% select(-all_of(colnames(np1)))
+```
+Additionally, there are other variables with values type character. They are
+not very suitable for our model, so we will select only numeric variables
+(except index and time stamps variables). Doing this, all observations are
+complete.
+```{r }
+train2 <- train2 %>% select_if(is.numeric) %>% select(-c(1:4))
+nrow(train2)==length(complete.cases(train2))
+```
+So, we reduce our set of variables to 52.
+```{r echo=FALSE}
+pred <- colnames(train2)
+pred
+```
+It's hard to conclude if there are some preponderant variables to build our prediction model. We will use these set of variables as predictors.
+
+## Data Slicing
+As we said, original test set has not classe variable. So, we split the original
+"train" data set in two groups: Training data set (75% of original train
+observations) and testing data set (25% of original train observations).
+```{r partition}
+inTrain <- createDataPartition(y=train$classe,p=0.75, list=FALSE)
+training <- train[inTrain,]
+testing <- train[-inTrain,]
+```
+
+## Preprocessing
+We want to prevent errors and bias in our modeling process, thus we create a
+recipe that allows us to drop predictors with NA values, variance near to zero
+and high correlation, using recipe functions from caret package.
+```{r reciping}
+f <- paste(pred,collapse="+")
+f <- as.formula(paste("classe~",f)) ## Defines formula using 52 variables.
+mrecipe <- recipe(f,data = training) %>% 
+                  step_naomit(everything()) %>% 
+                    step_nzv(all_predictors()) %>%
+                      step_corr(all_predictors())
+preptrrecipe <- prep(mrecipe,training)
+```
+
+## Model Building
+We want to build 3 alternative models to predict **classe** outcome. First, we
+create the preprocessed trainining and testig sets (applying the recipe created
+above)  and define a k-fold cross-validation to be applied to the each model, in
+order to fit them using different subset of the preprocessed traininig set.
+```{r}
+preptrain <- bake(preptrrecipe, training)
+preptest <- bake(preptrrecipe, testing)
+cvctr <- trainControl(method = "cv",number=5,allowParallel = TRUE)
+```
+
+### LDA
+Initially, we use a Linear Discriminant Analysis to build our first model. We
+left default settings on the train function, only indicate the control
+parameters for train.
+```{r lda}
+set.seed(19)
+modellda <- train(classe~.,preptrain,method="lda",trControl = cvctr)
+modellda
+```
+We got an **accuracy of 67.67%**. When we apply this model to the preprocessed testing set, its accuracy raises to 66.99%.
+```{r ldapredict}
+predlda <- predict(modellda,preptest)
+confusionMatrix(table(predlda,testing$classe))
+```
+So, the out of sample error for this model is **33.01%**. We calculated it as follow:
+```{r ldaerror}
+(1-0.6699)*100 ## (1 - Accuracy)*100
+```
+## Recursive Partitioning and Regression Tree
+Our second model is built using rpart method. Again, We left default settings on train function, and use same control parameters for train.
+```{r rpart}
+set.seed(19)
+modelrp <- train(classe~.,preptrain,method="rpart",trControl = cvctr)
+modelrp
+```
+This second approach has a lesser accuracy than LDA model, with  **50.18%**.
+Applying this new model to the preprocessed test set, we have even a lesser
+accuracy: 48.76%.
+```{r rpart_predict}
+predrp <- predict(modelrp,preptest)
+confusionMatrix(table(predrp,testing$classe))
+```
+```{r rpart_error}
+(1-0.4876)*100 ## (1 - Accuracy)*100
+```
+The out of sample error for the rpart model is **51.24%**.
+
+## Random Forest
+Our final model is a random forest approach, this time we determinate an
+additional parameter on the train function: mtry = 3, which assigns 3 variables
+available for splitting at each tree node. (Note: due to this process could be
+long in system calculations, we enable paralell processing)
+```{r rf, Cache=TRUE}
+set.seed(19)
+cluster <- makeCluster(detectCores() - 1)
+registerDoParallel(cluster)
+modelrf <- train(classe~.,preptrain,method="rf",tuneGrid = data.frame(mtry = 3),
+                 trControl = cvctr)
+stopCluster(cluster)
+registerDoSEQ()
+
+modelrf
+```
+We got an accuracy of **99.22%**. When we apply this model to the preprocessed test set, accuracy is 99.2%.
+```{r rfpredict}
+predrf <- predict(modelrf,preptest)
+confusionMatrix(table(predrf,testing$classe))
+```
+```{r rferror}
+(1-0.992)*100 ## (1 - Accuracy)*100
+```
+The out of sample error for this model is by far the lesser: **8%**.
+
+## Conclussion
+According to obtained results for each model, we select the random forest
+approach. It has greater accuracy, thus lesser out of sample error. This error
+represents the to predict the outcome variable on unseen data (in this case the
+testing set) and could be generated due to overfitting.
+
+## Prediction for 20 test cases
+Finally, we apply the rf model into the original test set, which has 20 observations.
+```{r 20test}
+pred20 <- predict(modelrf,test)
+tibble(problem_Id = test$problem_id, predicted_value =pred20)
+```
