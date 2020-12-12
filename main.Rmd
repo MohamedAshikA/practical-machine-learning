@@ -1,5 +1,5 @@
 # Determinig How Well are Done Physical Activities
-## By Jonathan Pregonero
+## By Mohamed Ashik A
 
 ## Sinopsys
 When we talk about keeping our body healthy, frequently we think in the amount
